@@ -103,7 +103,8 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
                  print_progress=True, scoring='accuracy',
                  cv=5, skip_if_stuck=True, n_jobs=1,
                  pre_dispatch='2*n_jobs',
-                 clone_estimator=True):
+                 clone_estimator=True,
+                 anomaly_point_index = None):
         self.estimator = estimator
         self.k_features = k_features
         self.forward = forward
@@ -113,6 +114,7 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
         self.scorer = get_scorer(scoring)
         self.skip_if_stuck = skip_if_stuck
         self.cv = cv
+        self.anomaly_point_index = anomaly_point_index
         self.print_progress = print_progress
         self.n_jobs = n_jobs
         self.named_est = {key: value for key, value in
@@ -182,6 +184,7 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
 
         self.subsets_ = {}
         orig_set = set(range(X.shape[1]))
+        """
         if self.forward:
             if select_in_range:
                 k_to_select = self.k_features[1]
@@ -196,6 +199,12 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
             self.subsets_[k] = {'feature_idx': k_idx,
                                 'cv_scores': k_score,
                                 'avg_score': k_score.mean()}
+        """
+
+        if select_in_range:
+                k_to_select = self.k_features[1]
+        k_idx = ()
+        k = 0
 
         while k != k_to_select:
             prev_subset = set(k_idx)
@@ -207,18 +216,29 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
             else:
                 k_idx, k_score, cv_scores = \
                     self._exclusion(feature_set=prev_subset, X=X, y=y)
+                
+                if len(k_idx) == X.shape[1]:
+                    self.subsets_[len(k_idx)] = {'feature_idx': k_idx,
+                                    'cv_scores': cv_scores,
+                                    'avg_score': k_score} 
+                    
+                    if self.print_progress:
+                        sys.stderr.write('\rFeatures: %d/%d' % (len(k_idx), k_to_select))
+                        sys.stderr.flush()
+                    
+                    break  
 
             if self.floating and not self._is_stuck(sdq):
                 (new_feature,) = set(k_idx) ^ prev_subset
                 if self.forward:
                     k_idx_c, k_score_c, cv_scores_c = \
-                        self._exclusion(feature_set=k_idx,
+                        self._conditional_exclusion(feature_set=k_idx,
                                         fixed_feature=new_feature,
                                         X=X, y=y)
                 else:
                     k_idx_c, k_score_c, cv_scores_c = \
-                        self._inclusion(orig_set=orig_set - {new_feature},
-                                        subset=set(k_idx),
+                        self._conditional_inclusion(feature_set=k_idx,
+                                        fixed_feature=new_feature,
                                         X=X, y=y)
 
                 if k_score_c and k_score_c > k_score:
@@ -227,11 +247,30 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
 
             k = len(k_idx)
             # floating can lead to multiple same-sized subsets
+            """
             if k not in self.subsets_ or (self.subsets_[k]['avg_score'] >
                                           k_score):
                 self.subsets_[k] = {'feature_idx': k_idx,
                                     'cv_scores': cv_scores,
                                     'avg_score': k_score}
+            """    
+            if k not in self.subsets_:
+
+                self.subsets_[k] = {'feature_idx': k_idx,
+                                    'cv_scores': cv_scores,
+                                    'avg_score': k_score}
+                #print self.subsets_[k]['feature_idx']     
+       
+            else:
+			    
+                #print self.subsets_[k]['feature_idx']
+                del self.subsets_[k]
+			
+                self.subsets_[k] = {'feature_idx': k_idx,
+                                    'cv_scores': cv_scores,
+                                    'avg_score': k_score}
+                #print self.subsets_[k]['feature_idx']            
+			
             sdq.append(k_idx)
 
             if self.print_progress:
@@ -252,6 +291,19 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
         self.k_score_ = k_score
         self.subsets_plus_ = dict()
         self.fitted = True
+
+        if self.forward:
+            sfe_probability_list = [1 + prob[1]['avg_score']
+                                    for prob in self.subsets_.items()]
+            self.analyst_probabilities = sfe_probability_list
+        else:
+            sae = [ features[1]['feature_idx']
+                    for features in self.subsets_.items()]
+            sfe_probability_list = [1- self._calc_score(X, y, features).mean()
+                                    for features in sae ]
+            self.analyst_probabilities = sfe_probability_list
+        print self.analyst_probabilities
+
         return self
 
     def _is_stuck(self, sdq):
@@ -270,7 +322,8 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
                                      pre_dispatch=self.pre_dispatch)
         else:
             self.est_.fit(X[:, indices], y)
-            scores = np.array([self.scorer(self.est_, X[:, indices], y)])
+            scores = np.array([self.scorer(self.est_,
+                               [X[self.anomaly_point_index, indices]], y)])
         return scores
 
     def _inclusion(self, orig_set, subset, X, y):
@@ -293,12 +346,54 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
         return res
 
     def _exclusion(self, feature_set, X, y, fixed_feature=None):
-        n = len(feature_set)
+
         res = (None, None, None)
-        if n > 1:
-            all_avg_scores = []
-            all_cv_scores = []
-            all_subsets = []
+        full_set = set(range(X.shape[1]))
+        remaining = full_set - feature_set
+
+        all_avg_scores = []
+        all_cv_scores = []
+        all_subsets = []
+        
+        if len(remaining)>1:
+           for feature in remaining:
+              new_subset = tuple(feature_set | {feature})
+              cv_scores = self._calc_score(X, y, list(remaining - {feature}))
+              all_avg_scores.append(cv_scores.mean())
+              all_cv_scores.append(cv_scores)
+              all_subsets.append(new_subset)
+        
+           best = np.argmax(all_avg_scores)
+
+           res = (all_subsets[best],
+                   all_avg_scores[best],
+                   all_cv_scores[best])
+        else:
+           
+           new_subset = tuple(full_set)
+           all_avg_scores = 1 
+           all_cv_scores = np.array([1])
+           
+           res = (new_subset,all_avg_scores,all_cv_scores)
+
+        return res
+
+    def _conditional_exclusion(self, feature_set, X, y, fixed_feature=None):
+        
+        n = len(feature_set)
+        all_avg_scores = []
+        all_cv_scores = []
+        all_subsets = []
+		
+        if n > 2:
+			
+            previous_set = self.subsets_[n-1]['feature_idx']
+            all_cv_scores_previous_set = self.subsets_[n-1]['cv_scores']	
+            all_avg_scores_previous_set = self.subsets_[n-1]['avg_score']
+
+            all_cv_scores_feature_set = self._calc_score(X,y,feature_set)	
+            all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+
             for p in combinations(feature_set, r=n - 1):
                 if fixed_feature and fixed_feature not in set(p):
                     continue
@@ -306,11 +401,194 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
                 all_avg_scores.append(cv_scores.mean())
                 all_cv_scores.append(cv_scores)
                 all_subsets.append(p)
+       		
             best = np.argmax(all_avg_scores)
-            res = (all_subsets[best],
-                   all_avg_scores[best],
-                   all_cv_scores[best])
-        return res
+			
+            if all_avg_scores_previous_set >= all_avg_scores[best]:
+				
+                res = (feature_set, all_avg_scores_feature_set,
+                       all_cv_scores_feature_set)
+                return res 
+            
+            else:
+                
+                feature_set = all_subsets[best]
+
+                if len(feature_set) ==2:
+                          
+                    all_cv_scores_feature_set = self._calc_score(X,y,feature_set)	
+                    all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+
+                    res = (feature_set, all_avg_scores_feature_set,
+                           all_cv_scores_feature_set)
+                    return res
+   
+                while True:
+                   
+                    print "backrack"
+                    all_avg_scores = []
+                    all_cv_scores = []
+                    all_subsets = []
+                
+                    n = len(feature_set)
+                    all_cv_scores_feature_set = self._calc_score(X,y,feature_set)	
+                    all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+                    
+                    previous_set = self.subsets_[n-1]['feature_idx']
+                    all_cv_scores_previous_set = self.subsets_[n-1]['cv_scores']	
+                    all_avg_scores_previous_set = self.subsets_[n-1]['avg_score']	
+                    
+                    for p in combinations(feature_set, r=n - 1):
+
+          	            cv_scores = self._calc_score(X, y, p)
+          	            all_avg_scores.append(cv_scores.mean())
+          	            all_cv_scores.append(cv_scores)
+          	            all_subsets.append(p) 
+                    
+                    #print all_subsets,all_avg_scores
+                    best = np.argmax(all_avg_scores)
+                     
+                    if all_avg_scores[best] <= all_avg_scores_previous_set:
+                       
+                        res = (feature_set,all_avg_scores_feature_set,all_cv_scores_feature_set)
+                        return res
+                    
+                    else:
+                        feature_to_exclude = set(feature_set).difference(set(all_subsets[best]))
+                        print feature_set, all_subsets[best],feature_to_exclude
+                        feature_set = tuple(set(feature_set) - feature_to_exclude)
+                        
+                        n = len(feature_set)
+                        
+                        if n ==2:
+                            all_cv_scores_feature_set = self._calc_score(X,y,feature_set)	
+                            all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+
+                            res = (feature_set,all_avg_scores_feature_set,all_cv_scores_feature_set)
+                            return res
+                           
+        else:
+
+            all_cv_scores_feature_set = self._calc_score(X,y,feature_set)	
+            all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+
+            res = (feature_set,all_avg_scores_feature_set,all_cv_scores_feature_set)
+            #print feature_set
+            return res
+
+        
+    def _conditional_inclusion(self, feature_set, X, y, fixed_feature=None):
+       
+        n = len(feature_set)
+        all_avg_scores = []
+        all_cv_scores = []
+        all_subsets = []
+        full_set = set(range(X.shape[1]))
+
+        if n > 2:
+			
+            previous_set = self.subsets_[n-1]['feature_idx']
+            all_cv_scores_previous_set = self.subsets_[n-1]['cv_scores']	
+            all_avg_scores_previous_set = self.subsets_[n-1]['avg_score']
+            
+            remaining_feature_set = full_set - set(feature_set)
+
+            all_cv_scores_feature_set = self._calc_score(X,y,list(remaining_feature_set))	
+            all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+
+            
+            remaining_previous_set = full_set - set(previous_set)
+
+            for feature in previous_set:
+                new_subset = list(set(feature_set) - {feature})
+                cv_scores = self._calc_score(X, y, list(remaining_feature_set | {feature}))
+                all_avg_scores.append(cv_scores.mean())
+                all_cv_scores.append(cv_scores)
+                all_subsets.append(new_subset)
+       		
+            best = np.argmax(all_avg_scores)
+			
+            if all_avg_scores_previous_set >= all_avg_scores[best]:
+				
+                res = (feature_set,all_avg_scores_feature_set,all_cv_scores_feature_set)
+                return res 
+            
+            else:
+                
+                feature_set = all_subsets[best]
+
+                if len(feature_set) ==2:
+                    
+                    remaining_feature_set  = full_set - set(feature_set)      
+                    all_cv_scores_feature_set = self._calc_score(X,y,list(remaining_feature_set))	
+                    all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+
+                    res = (feature_set,all_avg_scores_feature_set,all_cv_scores_feature_set)
+                    #print feature_set
+                    return res
+   
+                while True:
+                   
+                    print "backrack"
+                    all_avg_scores = []
+                    all_cv_scores = []
+                    all_subsets = []
+                
+                    n = len(feature_set)
+                    remaining_feature_set  = full_set -set(feature_set)
+
+                    all_cv_scores_feature_set = self._calc_score(X,y,list(remaining_feature_set))	
+                    all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+                    
+                    previous_set = self.subsets_[n-1]['feature_idx']
+                    all_cv_scores_previous_set = self.subsets_[n-1]['cv_scores']	
+                    all_avg_scores_previous_set = self.subsets_[n-1]['avg_score']	
+                    
+                    remaining_previous_set = full_set - set(previous_set)
+
+                    #print feature_set
+                    #print previous_set
+                    for feature in feature_set:
+                        new_subset = list(set(feature_set) - {feature})
+                        cv_scores = self._calc_score(X, y, list(remaining_feature_set | {feature}))
+                        all_avg_scores.append(cv_scores.mean())
+                        all_cv_scores.append(cv_scores)
+                        all_subsets.append(new_subset) 
+                        #print new_subset
+                    #print all_subsets,all_avg_scores
+                    best = np.argmax(all_avg_scores)
+                     
+                    if all_avg_scores[best] <= all_avg_scores_previous_set:
+                       
+                        res = (feature_set,all_avg_scores_feature_set,all_cv_scores_feature_set)
+                        return res
+                    
+                    else:
+                        
+                        feature_to_exclude = set(full_set -set(all_subsets[best])).difference(remaining_feature_set)
+                        print feature_set, all_subsets[best],feature_to_exclude
+                        feature_set = tuple(set(feature_set) - set(feature_to_exclude))
+                        
+                        n = len(feature_set)
+                        
+                        if n ==2:
+                          
+                            all_cv_scores_feature_set = self._calc_score(X,y,list(full_set-set(feature_set)))	
+                            all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+
+                            res = (feature_set,all_avg_scores_feature_set,all_cv_scores_feature_set)
+                            #print feature_set
+                            return res
+                           
+
+        else:
+
+            all_cv_scores_feature_set = self._calc_score(X,y,list(full_set-set(feature_set)))	
+            all_avg_scores_feature_set = all_cv_scores_feature_set.mean()
+
+            res = (feature_set,all_avg_scores_feature_set,all_cv_scores_feature_set)
+            #print feature_set
+            return res
 
     def transform(self, X):
         """Reduce X to its most important features.
