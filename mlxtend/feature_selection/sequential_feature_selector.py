@@ -302,7 +302,7 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
             sfe_probability_list = [1- self._calc_score(X, y, features).mean()
                                     for features in sae ]
             self.analyst_probabilities = sfe_probability_list
-        print self.analyst_probabilities
+        #print self.analyst_probabilities
 
         return self
 
@@ -425,7 +425,7 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
    
                 while True:
                    
-                    print "backrack"
+                    #print "backrack"
                     all_avg_scores = []
                     all_cv_scores = []
                     all_subsets = []
@@ -455,7 +455,7 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
                     
                     else:
                         feature_to_exclude = set(feature_set).difference(set(all_subsets[best]))
-                        print feature_set, all_subsets[best],feature_to_exclude
+                        #print feature_set, all_subsets[best],feature_to_exclude
                         feature_set = tuple(set(feature_set) - feature_to_exclude)
                         
                         n = len(feature_set)
@@ -529,7 +529,7 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
    
                 while True:
                    
-                    print "backrack"
+                    #print "backrack"
                     all_avg_scores = []
                     all_cv_scores = []
                     all_subsets = []
@@ -566,7 +566,7 @@ class SequentialFeatureSelector(BaseEstimator, MetaEstimatorMixin):
                     else:
                         
                         feature_to_exclude = set(full_set -set(all_subsets[best])).difference(remaining_feature_set)
-                        print feature_set, all_subsets[best],feature_to_exclude
+                        #print feature_set, all_subsets[best],feature_to_exclude
                         feature_set = tuple(set(feature_set) - set(feature_to_exclude))
                         
                         n = len(feature_set)
